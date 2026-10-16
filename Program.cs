@@ -1,5 +1,4 @@
-﻿using System.Text.Json;
-using WasmCSharp;
+﻿using WasmCSharp;
 
 if (args.Length != 3 || !string.Equals(args[0], "parse", StringComparison.OrdinalIgnoreCase))
 {
@@ -23,24 +22,7 @@ try
     }
 
     var csv = await File.ReadAllBytesAsync(csvPath);
-    var result = await new WasiPluginRunner().RunAsync(pluginPath, csv);
-
-    if (!string.IsNullOrWhiteSpace(result.StandardError))
-    {
-        Console.Error.WriteLine(result.StandardError.TrimEnd());
-    }
-
-    if (result.StandardOutput.Length == 0)
-    {
-        throw new InvalidDataException("The plugin produced no dataframe on stdout.");
-    }
-
-    var dataframe = JsonSerializer.Deserialize<DataFrame>(
-        result.StandardOutput,
-        new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-        ?? throw new InvalidDataException("The plugin output was not a dataframe.");
-
-    dataframe.Validate();
+    var dataframe = await new ComponentPluginRunner().ParseAsync(pluginPath, csv);
     Console.WriteLine(dataframe.ToJson());
     Console.Error.WriteLine($"Parsed {dataframe.Rows.Length} rows and {dataframe.Columns.Length} columns.");
     return 0;

@@ -3,6 +3,12 @@ name = "sunshine_tsv_plugin"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63.0"
+
 [profile.release]
 opt-level = "s"
 lto = true

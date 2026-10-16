@@ -1,0 +1,30 @@
+package csv:plugin@0.1.0;
+
+interface importer {
+    record column {
+        name: string,
+        data-type: string,
+    }
+
+    record row {
+        timestamp: string,
+        values: list<f64>,
+    }
+
+    record dataframe {
+        columns: list<column>,
+        rows: list<row>,
+    }
+
+    variant parse-error {
+        invalid-format(string),
+        invalid-data(string),
+        unsupported-schema(string),
+    }
+
+    parse: func(input: list<u8>) -> result<dataframe, parse-error>;
+}
+
+world csv-importer {
+    export importer;
+}
