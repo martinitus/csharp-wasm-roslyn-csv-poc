@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Rust build output
+plugins/**/target/
+
+# Keep the compiled sample plugin artifacts
+!plugins/bin/
+!plugins/bin/*.wasm
