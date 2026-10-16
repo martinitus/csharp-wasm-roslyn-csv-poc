@@ -1,60 +1,61 @@
 # WasmCSharp
 
-A proof-of-concept .NET CLI host for format-specific file importer components. Plugins are WebAssembly Components described by WIT and hosted through Wasmtime's native Component Model C API called directly from C# via P/Invoke.
+A proof-of-concept .NET CLI host for format-specific file importer plugins written as ordinary C# source files. The host compiles each provider at runtime with Roslyn, loads it into a collectible `AssemblyLoadContext`, invokes its `Parse` method, and validates the returned dataframe.
 
-The host accepts input bytes from the CLI today and can use the same `ComponentPluginRunner` from an HTTP upload or Kafka consumer. The plugin boundary does not use temporary files, stdin/stdout, OS pipes, named pipes, or a virtual filesystem.
+This approach is intended for trusted provider code. It is more user-friendly than requiring Rust, WIT, or a WebAssembly toolchain, but runtime-compiled C# is **not a security sandbox**.
 
 ## Prerequisites
 
 - .NET 10 SDK
-- Rust toolchain
-- `wasm-tools` CLI
-- The Rust `wasm32-unknown-unknown` target for rebuilding the sample components
 
 ## CLI
 
-Pass a file and a compiled WebAssembly Component to the host:
+Pass an input file and a provider source file to the host:
 
 ```sh
-dotnet run -- parse samples/temperature.csv plugins/bin/temperature_csv.component.wasm
-dotnet run -- parse samples/sunshine.tsv plugins/bin/sunshine_tsv.component.wasm
+dotnet run -- parse samples/temperature.csv plugins/temperature_csv/parse.cs
+dotnet run -- parse samples/sunshine.tsv plugins/sunshine_tsv/parse.cs
 ```
 
 The dataframe is written as JSON to stdout. Status and errors are written to stderr, so the JSON can be piped to another process.
 
-## Component contract
+## Provider contract
 
-The shared contract is [`wit/csv-importer.wit`](wit/csv-importer.wit):
+A provider is one C# source file defining a public static `Plugin` class with this method:
 
-```wit
-parse: func(input: list<u8>) -> result<dataframe, parse-error>;
+```csharp
+public static DataFrame Parse(ReadOnlyMemory<byte> input)
 ```
 
-The result contains named columns and timestamp-indexed rows:
+The provider can use the host's public `WasmCSharp.DataFrame` and `WasmCSharp.DataFrameRow` types. The host validates the returned dataframe after invocation.
 
-```json
+Example:
+
+```csharp
+using System;
+using System.Text;
+using WasmCSharp;
+
+public static class Plugin
 {
-  "columns": ["Berlin", "London"],
-  "rows": [
-    { "timestamp": "2026-01-01T00:00:00Z", "values": [2.5, 7.0] }
-  ]
+    public static DataFrame Parse(ReadOnlyMemory<byte> input)
+    {
+        var text = Encoding.UTF8.GetString(input.Span);
+        // Format-specific parsing here.
+        return new DataFrame(
+            ["Berlin"],
+            [new DataFrameRow("2026-01-01T00:00:00Z", [2.5])]);
+    }
 }
 ```
 
-Parse failures are typed WIT errors, for example:
-
-```text
-parse failed: invalid-data: temperature value is not numeric: not-a-temperature
-```
-
-The initial contract intentionally accepts the complete input as `list<u8>`. Streaming is not part of this first version.
+The web-upload and Kafka paths can pass their received bytes to the same `CSharpPluginRunner.ParseAsync` method. They do not need to know anything about the provider's source code.
 
 ## Included examples
 
-- `samples/temperature.csv` is comma-separated, row-major, and has leading blank lines plus commented metadata. `plugins/temperature_csv` parses it.
-- `samples/sunshine.tsv` is tab-separated and column-major: each city has one row and timestamps are the columns. `plugins/sunshine_tsv` transposes it into the common dataframe shape.
-- `samples/temperature-corrupt.csv` deliberately contains `not-a-temperature`; the component returns `parse-error.invalid-data` and the host exits with code `1`.
-- `plugins/bin/*.component.wasm` contains the compiled sample components.
+- `samples/temperature.csv` is comma-separated, row-major, and has leading blank lines plus commented metadata. `plugins/temperature_csv/parse.cs` parses it.
+- `samples/sunshine.tsv` is tab-separated and column-major: each city has one row and timestamps are the columns. `plugins/sunshine_tsv/parse.cs` transposes it into the common dataframe shape.
+- `samples/temperature-corrupt.csv` deliberately contains `not-a-temperature`; the provider throws and the host exits with code `1`.
 
 Both valid examples produce 10 timestamp rows and 5 city columns for Berlin, London, New York, Tokyo, and Sydney.
 
@@ -64,33 +65,22 @@ Both valid examples produce 10 timestamp rows and 5 city columns for Berlin, Lon
 dotnet build
 ```
 
-The `Wasmtime` NuGet package supplies the native `libwasmtime` RID asset used by the C# P/Invoke layer. The host enables the native Component Model API and manually marshals the WIT values required by this contract.
+Roslyn is provided by the [`Microsoft.CodeAnalysis.CSharp`](https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp) NuGet package. Provider source files under `plugins/` are excluded from the host's normal SDK-style compilation and are compiled only when selected by the CLI.
 
-## Rebuild the sample components
-
-The Rust implementations use `wit-bindgen` and share the repository WIT contract. They are compiled as core Wasm for `wasm32-unknown-unknown`, then wrapped into Components using the embedded WIT metadata:
+## Failure example
 
 ```sh
-rustup target add wasm32-unknown-unknown
-
-cargo build --release --target wasm32-unknown-unknown \
-  --manifest-path plugins/temperature_csv/Cargo.toml
-cargo build --release --target wasm32-unknown-unknown \
-  --manifest-path plugins/sunshine_tsv/Cargo.toml
-
-mkdir -p plugins/bin
-wasm-tools component new \
-  plugins/temperature_csv/target/wasm32-unknown-unknown/release/temperature_csv_plugin.wasm \
-  -o plugins/bin/temperature_csv.component.wasm
-wasm-tools component new \
-  plugins/sunshine_tsv/target/wasm32-unknown-unknown/release/sunshine_tsv_plugin.wasm \
-  -o plugins/bin/sunshine_tsv.component.wasm
+dotnet run -- parse samples/temperature-corrupt.csv plugins/temperature_csv/parse.cs
 ```
 
-## Runtime security
+Expected result:
 
-Uploaded components are untrusted code. Before production use, add strict input-size, output-size, memory, fuel, and execution-time limits. Keep the linker free of host imports unless explicitly required, validate the returned dataframe schema, and isolate plugin engines/stores according to the service's concurrency and tenancy model.
+```text
+parse failed: C# plugin execution failed: The input string 'not-a-temperature' was not in a correct format.
+```
 
-## Package
+## Security model
 
-The runtime is provided by the [`Wasmtime`](https://www.nuget.org/packages/Wasmtime) NuGet package. The managed package's high-level Component Model API is not used; the project calls the native Component Model C API directly from C#.
+Runtime-compiled C# is trusted code execution. `AssemblyLoadContext` provides assembly loading and unloadability, but it is not a security boundary. A provider can potentially access the host process, filesystem, network, environment, reflection, and other .NET APIs.
+
+Only use this mode for trusted providers. If providers are untrusted or user-uploaded, use an isolated process/container or return to a sandboxed runtime such as WebAssembly Components.

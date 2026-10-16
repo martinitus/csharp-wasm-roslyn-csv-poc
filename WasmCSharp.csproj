@@ -8,7 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Wasmtime" Version="48.0.2" />
+    <Compile Remove="plugins/**/*.cs" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
   </ItemGroup>
 
 </Project>
